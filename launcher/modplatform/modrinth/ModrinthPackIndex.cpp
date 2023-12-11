@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
- *  PolyMC - Minecraft Launcher
+ *  Prism Launcher - Minecraft Launcher
  *  Copyright (c) 2022 flowln <flowlnlnln@gmail.com>
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -22,10 +22,15 @@
 #include "Json.h"
 #include "minecraft/MinecraftInstance.h"
 #include "minecraft/PackProfile.h"
-#include "net/NetJob.h"
+#include "modplatform/ModIndex.h"
 
 static ModrinthAPI api;
 static ModPlatform::ProviderCapabilities ProviderCaps;
+
+bool shouldDownloadOnSide(QString side)
+{
+    return side == "required" || side == "optional";
+}
 
 // https://docs.modrinth.com/api-spec/#tag/projects/operation/getProject
 void Modrinth::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
@@ -52,6 +57,17 @@ void Modrinth::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
     modAuthor.name = Json::ensureString(obj, "author", QObject::tr("No author(s)"));
     modAuthor.url = api.getAuthorURL(modAuthor.name);
     pack.authors.append(modAuthor);
+
+    auto client = shouldDownloadOnSide(Json::ensureString(obj, "client_side"));
+    auto server = shouldDownloadOnSide(Json::ensureString(obj, "server_side"));
+
+    if (server && client) {
+        pack.side = "both";
+    } else if (server) {
+        pack.side = "server";
+    } else if (client) {
+        pack.side = "client";
+    }
 
     // Modrinth can have more data than what's provided by the basic search :)
     pack.extraDataLoaded = false;
@@ -93,19 +109,19 @@ void Modrinth::loadExtraPackData(ModPlatform::IndexedPack& pack, QJsonObject& ob
     pack.extraDataLoaded = true;
 }
 
-void Modrinth::loadIndexedPackVersions(ModPlatform::IndexedPack& pack,
-                                       QJsonArray& arr,
-                                       const shared_qobject_ptr<QNetworkAccessManager>& network,
-                                       const BaseInstance* inst)
+void Modrinth::loadIndexedPackVersions(ModPlatform::IndexedPack& pack, QJsonArray& arr, const BaseInstance* inst)
 {
     QVector<ModPlatform::IndexedVersion> unsortedVersions;
-    QString mcVersion = (static_cast<const MinecraftInstance*>(inst))->getPackProfile()->getComponentVersion("net.minecraft");
+    auto profile = (dynamic_cast<const MinecraftInstance*>(inst))->getPackProfile();
+    QString mcVersion = profile->getComponentVersion("net.minecraft");
+    auto loaders = profile->getSupportedModLoaders();
 
     for (auto versionIter : arr) {
         auto obj = versionIter.toObject();
         auto file = loadIndexedPackVersion(obj);
 
-        if (file.fileId.isValid())  // Heuristic to check if the returned value is valid
+        if (file.fileId.isValid() &&
+            (!loaders.has_value() || !file.loaders || loaders.value() & file.loaders))  // Heuristic to check if the returned value is valid
             unsortedVersions.append(file);
     }
     auto orderSortPredicate = [](const ModPlatform::IndexedVersion& a, const ModPlatform::IndexedVersion& b) -> bool {
@@ -134,11 +150,46 @@ auto Modrinth::loadIndexedPackVersion(QJsonObject& obj, QString preferred_hash_t
     }
     auto loaders = Json::requireArray(obj, "loaders");
     for (auto loader : loaders) {
-        file.loaders.append(loader.toString());
+        if (loader == "neoforge")
+            file.loaders |= ModPlatform::NeoForge;
+        if (loader == "forge")
+            file.loaders |= ModPlatform::Forge;
+        if (loader == "cauldron")
+            file.loaders |= ModPlatform::Cauldron;
+        if (loader == "liteloader")
+            file.loaders |= ModPlatform::LiteLoader;
+        if (loader == "fabric")
+            file.loaders |= ModPlatform::Fabric;
+        if (loader == "quilt")
+            file.loaders |= ModPlatform::Quilt;
     }
     file.version = Json::requireString(obj, "name");
     file.version_number = Json::requireString(obj, "version_number");
+    file.version_type = ModPlatform::IndexedVersionType(Json::requireString(obj, "version_type"));
+
     file.changelog = Json::requireString(obj, "changelog");
+
+    auto dependencies = Json::ensureArray(obj, "dependencies");
+    for (auto d : dependencies) {
+        auto dep = Json::ensureObject(d);
+        ModPlatform::Dependency dependency;
+        dependency.addonId = Json::ensureString(dep, "project_id");
+        dependency.version = Json::ensureString(dep, "version_id");
+        auto depType = Json::requireString(dep, "dependency_type");
+
+        if (depType == "required")
+            dependency.type = ModPlatform::DependencyType::REQUIRED;
+        else if (depType == "optional")
+            dependency.type = ModPlatform::DependencyType::OPTIONAL;
+        else if (depType == "incompatible")
+            dependency.type = ModPlatform::DependencyType::INCOMPATIBLE;
+        else if (depType == "embedded")
+            dependency.type = ModPlatform::DependencyType::EMBEDDED;
+        else
+            dependency.type = ModPlatform::DependencyType::UNKNOWN;
+
+        file.dependencies.append(dependency);
+    }
 
     auto files = Json::requireArray(obj, "files");
     int i = 0;
@@ -194,4 +245,28 @@ auto Modrinth::loadIndexedPackVersion(QJsonObject& obj, QString preferred_hash_t
     }
 
     return {};
+}
+
+auto Modrinth::loadDependencyVersions([[maybe_unused]] const ModPlatform::Dependency& m, QJsonArray& arr, const BaseInstance* inst)
+    -> ModPlatform::IndexedVersion
+{
+    auto profile = (dynamic_cast<const MinecraftInstance*>(inst))->getPackProfile();
+    QString mcVersion = profile->getComponentVersion("net.minecraft");
+    auto loaders = profile->getSupportedModLoaders();
+
+    QVector<ModPlatform::IndexedVersion> versions;
+    for (auto versionIter : arr) {
+        auto obj = versionIter.toObject();
+        auto file = loadIndexedPackVersion(obj);
+
+        if (file.fileId.isValid() &&
+            (!loaders.has_value() || !file.loaders || loaders.value() & file.loaders))  // Heuristic to check if the returned value is valid
+            versions.append(file);
+    }
+    auto orderSortPredicate = [](const ModPlatform::IndexedVersion& a, const ModPlatform::IndexedVersion& b) -> bool {
+        // dates are in RFC 3339 format
+        return a.date > b.date;
+    };
+    std::sort(versions.begin(), versions.end(), orderSortPredicate);
+    return versions.length() != 0 ? versions.front() : ModPlatform::IndexedVersion();
 }

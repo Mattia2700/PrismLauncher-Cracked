@@ -6,12 +6,13 @@
 #include "FlameModIndex.h"
 
 #include "Application.h"
-#include "BuildConfig.h"
 #include "Json.h"
+#include "net/ApiDownload.h"
+#include "net/ApiUpload.h"
 #include "net/NetJob.h"
 #include "net/Upload.h"
 
-Task::Ptr FlameAPI::matchFingerprints(const QList<uint>& fingerprints, QByteArray* response)
+Task::Ptr FlameAPI::matchFingerprints(const QList<uint>& fingerprints, std::shared_ptr<QByteArray> response)
 {
     auto netJob = makeShared<NetJob>(QString("Flame::MatchFingerprints"), APPLICATION->network());
 
@@ -26,9 +27,7 @@ Task::Ptr FlameAPI::matchFingerprints(const QList<uint>& fingerprints, QByteArra
     QJsonDocument body(body_obj);
     auto body_raw = body.toJson();
 
-    netJob->addNetAction(Net::Upload::makeByteArray(QString("https://api.curseforge.com/v1/fingerprints"), response, body_raw));
-
-    QObject::connect(netJob.get(), &NetJob::finished, [response] { delete response; });
+    netJob->addNetAction(Net::ApiUpload::makeByteArray(QString("https://api.curseforge.com/v1/fingerprints"), response, body_raw));
 
     return netJob;
 }
@@ -40,10 +39,10 @@ auto FlameAPI::getModFileChangelog(int modId, int fileId) -> QString
 
     auto netJob = makeShared<NetJob>(QString("Flame::FileChangelog"), APPLICATION->network());
     auto response = std::make_shared<QByteArray>();
-    netJob->addNetAction(Net::Download::makeByteArray(
+    netJob->addNetAction(Net::ApiDownload::makeByteArray(
         QString("https://api.curseforge.com/v1/mods/%1/files/%2/changelog")
             .arg(QString::fromStdString(std::to_string(modId)), QString::fromStdString(std::to_string(fileId))),
-        response.get()));
+        response));
 
     QObject::connect(netJob.get(), &NetJob::succeeded, [&netJob, response, &changelog] {
         QJsonParseError parse_error{};
@@ -75,8 +74,8 @@ auto FlameAPI::getModDescription(int modId) -> QString
 
     auto netJob = makeShared<NetJob>(QString("Flame::ModDescription"), APPLICATION->network());
     auto response = std::make_shared<QByteArray>();
-    netJob->addNetAction(Net::Download::makeByteArray(
-        QString("https://api.curseforge.com/v1/mods/%1/description").arg(QString::number(modId)), response.get()));
+    netJob->addNetAction(Net::ApiDownload::makeByteArray(
+        QString("https://api.curseforge.com/v1/mods/%1/description").arg(QString::number(modId)), response));
 
     QObject::connect(netJob.get(), &NetJob::succeeded, [&netJob, response, &description] {
         QJsonParseError parse_error{};
@@ -115,7 +114,7 @@ auto FlameAPI::getLatestVersion(VersionSearchArgs&& args) -> ModPlatform::Indexe
     auto response = std::make_shared<QByteArray>();
     ModPlatform::IndexedVersion ver;
 
-    netJob->addNetAction(Net::Download::makeByteArray(versions_url, response.get()));
+    netJob->addNetAction(Net::ApiDownload::makeByteArray(versions_url, response));
 
     QObject::connect(netJob.get(), &NetJob::succeeded, [response, args, &ver] {
         QJsonParseError parse_error{};
@@ -131,19 +130,13 @@ auto FlameAPI::getLatestVersion(VersionSearchArgs&& args) -> ModPlatform::Indexe
             auto obj = Json::requireObject(doc);
             auto arr = Json::requireArray(obj, "data");
 
-            QJsonObject latest_file_obj;
-            ModPlatform::IndexedVersion ver_tmp;
-
             for (auto file : arr) {
                 auto file_obj = Json::requireObject(file);
                 auto file_tmp = FlameMod::loadIndexedPackVersion(file_obj);
-                if(file_tmp.date > ver_tmp.date) {
-                    ver_tmp = file_tmp;
-                    latest_file_obj = file_obj;
-                }
+                if (file_tmp.date > ver.date && (!args.loaders.has_value() || !file_tmp.loaders || args.loaders.value() & file_tmp.loaders))
+                    ver = file_tmp;
             }
 
-            ver = FlameMod::loadIndexedPackVersion(latest_file_obj);
         } catch (Json::JsonException& e) {
             qCritical() << "Failed to parse response from a version request.";
             qCritical() << e.what();
@@ -160,7 +153,7 @@ auto FlameAPI::getLatestVersion(VersionSearchArgs&& args) -> ModPlatform::Indexe
     return ver;
 }
 
-Task::Ptr FlameAPI::getProjects(QStringList addonIds, QByteArray* response) const
+Task::Ptr FlameAPI::getProjects(QStringList addonIds, std::shared_ptr<QByteArray> response) const
 {
     auto netJob = makeShared<NetJob>(QString("Flame::GetProjects"), APPLICATION->network());
 
@@ -175,15 +168,14 @@ Task::Ptr FlameAPI::getProjects(QStringList addonIds, QByteArray* response) cons
     QJsonDocument body(body_obj);
     auto body_raw = body.toJson();
 
-    netJob->addNetAction(Net::Upload::makeByteArray(QString("https://api.curseforge.com/v1/mods"), response, body_raw));
+    netJob->addNetAction(Net::ApiUpload::makeByteArray(QString("https://api.curseforge.com/v1/mods"), response, body_raw));
 
-    QObject::connect(netJob.get(), &NetJob::finished, [response] { delete response; });
     QObject::connect(netJob.get(), &NetJob::failed, [body_raw] { qDebug() << body_raw; });
 
     return netJob;
 }
 
-Task::Ptr FlameAPI::getFiles(const QStringList& fileIds, QByteArray* response) const
+Task::Ptr FlameAPI::getFiles(const QStringList& fileIds, std::shared_ptr<QByteArray> response) const
 {
     auto netJob = makeShared<NetJob>(QString("Flame::GetFiles"), APPLICATION->network());
 
@@ -198,25 +190,33 @@ Task::Ptr FlameAPI::getFiles(const QStringList& fileIds, QByteArray* response) c
     QJsonDocument body(body_obj);
     auto body_raw = body.toJson();
 
-    netJob->addNetAction(Net::Upload::makeByteArray(QString("https://api.curseforge.com/v1/mods/files"), response, body_raw));
+    netJob->addNetAction(Net::ApiUpload::makeByteArray(QString("https://api.curseforge.com/v1/mods/files"), response, body_raw));
 
-    QObject::connect(netJob.get(), &NetJob::finished, [response] { delete response; });
     QObject::connect(netJob.get(), &NetJob::failed, [body_raw] { qDebug() << body_raw; });
 
     return netJob;
 }
 
-// https://docs.curseforge.com/?python#tocS_ModsSearchSortField
-static QList<ResourceAPI::SortingMethod> s_sorts = { { 1, "Featured", QObject::tr("Sort by Featured") },
-                                                     { 2, "Popularity", QObject::tr("Sort by Popularity") },
-                                                     { 3, "LastUpdated", QObject::tr("Sort by Last Updated") },
-                                                     { 4, "Name", QObject::tr("Sort by Name") },
-                                                     { 5, "Author", QObject::tr("Sort by Author") },
-                                                     { 6, "TotalDownloads", QObject::tr("Sort by Downloads") },
-                                                     { 7, "Category", QObject::tr("Sort by Category") },
-                                                     { 8, "GameVersion", QObject::tr("Sort by Game Version") } };
+Task::Ptr FlameAPI::getFile(const QString& addonId, const QString& fileId, std::shared_ptr<QByteArray> response) const
+{
+    auto netJob = makeShared<NetJob>(QString("Flame::GetFile"), APPLICATION->network());
+    netJob->addNetAction(
+        Net::ApiDownload::makeByteArray(QUrl(QString("https://api.curseforge.com/v1/mods/%1/files/%2").arg(addonId, fileId)), response));
+
+    QObject::connect(netJob.get(), &NetJob::failed, [addonId, fileId] { qDebug() << "Flame API file failure" << addonId << fileId; });
+
+    return netJob;
+}
 
 QList<ResourceAPI::SortingMethod> FlameAPI::getSortingMethods() const
 {
-    return s_sorts;
+    // https://docs.curseforge.com/?python#tocS_ModsSearchSortField
+    return { { 1, "Featured", QObject::tr("Sort by Featured") },
+             { 2, "Popularity", QObject::tr("Sort by Popularity") },
+             { 3, "LastUpdated", QObject::tr("Sort by Last Updated") },
+             { 4, "Name", QObject::tr("Sort by Name") },
+             { 5, "Author", QObject::tr("Sort by Author") },
+             { 6, "TotalDownloads", QObject::tr("Sort by Downloads") },
+             { 7, "Category", QObject::tr("Sort by Category") },
+             { 8, "GameVersion", QObject::tr("Sort by Game Version") } };
 }

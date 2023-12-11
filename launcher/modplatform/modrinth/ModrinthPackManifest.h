@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
- *  PolyMC - Minecraft Launcher
+ *  Prism Launcher - Minecraft Launcher
  *  Copyright (c) 2022 flowln <flowlnlnln@gmail.com>
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -45,6 +45,8 @@
 #include <QUrl>
 #include <QVector>
 
+#include "modplatform/ModIndex.h"
+
 class MinecraftInstance;
 
 namespace Modrinth {
@@ -55,6 +57,7 @@ struct File {
     QCryptographicHash::Algorithm hashAlgorithm;
     QByteArray hash;
     QQueue<QUrl> downloads;
+    bool required = true;
 };
 
 struct DonationData {
@@ -74,12 +77,12 @@ struct ModpackExtra {
     QString discordUrl;
 
     QList<DonationData> donate;
-
 };
 
 struct ModpackVersion {
     QString name;
     QString version;
+    ModPlatform::IndexedVersionType version_type;
     QString changelog;
 
     QString id;
@@ -97,10 +100,10 @@ struct Modpack {
     QString description;
     std::tuple<QString, QUrl> author;
     QString iconName;
-    QUrl    iconUrl;
+    QUrl iconUrl;
 
-    bool    versionsLoaded = false;
-    bool    extraInfoLoaded = false;
+    bool versionsLoaded = false;
+    bool extraInfoLoaded = false;
 
     ModpackExtra extra;
     QVector<ModpackVersion> versions;
@@ -113,7 +116,7 @@ auto loadIndexedVersion(QJsonObject&) -> ModpackVersion;
 
 auto validateDownloadUrl(QUrl) -> bool;
 
-}
+}  // namespace Modrinth
 
 Q_DECLARE_METATYPE(Modrinth::Modpack)
 Q_DECLARE_METATYPE(Modrinth::ModpackVersion)

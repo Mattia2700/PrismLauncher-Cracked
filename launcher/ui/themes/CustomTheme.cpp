@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
  *  Prism Launcher - Minecraft Launcher
- *  Copyright (C) 2022 Tayou <tayou@gmx.net>
+ *  Copyright (C) 2022 Tayou <git@tayou.org>
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -148,7 +148,7 @@ static bool writeThemeJson(const QString& path,
     try {
         Json::write(rootObj, path);
         return true;
-    } catch (const Exception& e) {
+    } catch ([[maybe_unused]] const Exception& e) {
         themeWarningLog() << "Failed to write theme json to" << path;
         return false;
     }
@@ -165,9 +165,13 @@ CustomTheme::CustomTheme(ITheme* baseTheme, QFileInfo& fileInfo, bool isManifest
         QString path = FS::PathCombine("themes", m_id);
         QString pathResources = FS::PathCombine("themes", m_id, "resources");
 
-        if (!FS::ensureFolderPathExists(path) || !FS::ensureFolderPathExists(pathResources)) {
-            themeWarningLog() << "couldn't create folder for theme!";
+        if (!FS::ensureFolderPathExists(path)) {
+            themeWarningLog() << "Theme directory for" << m_id << "could not be created. This theme might be invalid";
             return;
+        }
+
+        if (!FS::ensureFolderPathExists(pathResources)) {
+            themeWarningLog() << "Resources directory for" << m_id << "could not be created";
         }
 
         auto themeFilePath = FS::PathCombine(path, themeFile);
@@ -183,7 +187,8 @@ CustomTheme::CustomTheme(ITheme* baseTheme, QFileInfo& fileInfo, bool isManifest
             return;
         }
 
-        // FIXME: This is kinda jank, it only actually checks if the qss file path is not present. It should actually check for any relevant missing data (e.g. name, colors)
+        // FIXME: This is kinda jank, it only actually checks if the qss file path is not present. It should actually check for any relevant
+        // missing data (e.g. name, colors)
         if (jsonDataIncomplete) {
             writeThemeJson(fileInfo.absoluteFilePath(), m_palette, m_fadeAmount, m_fadeColor, m_name, m_widgets, m_qssFilePath);
         }
@@ -229,7 +234,11 @@ CustomTheme::CustomTheme(ITheme* baseTheme, QFileInfo& fileInfo, bool isManifest
 
 QStringList CustomTheme::searchPaths()
 {
-    return { FS::PathCombine("themes", m_id, "resources") };
+    QString pathResources = FS::PathCombine("themes", m_id, "resources");
+    if (QFileInfo::exists(pathResources))
+        return { pathResources };
+
+    return {};
 }
 
 QString CustomTheme::id()

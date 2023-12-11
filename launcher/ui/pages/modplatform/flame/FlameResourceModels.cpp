@@ -29,6 +29,11 @@ void FlameModModel::loadIndexedPackVersions(ModPlatform::IndexedPack& m, QJsonAr
     FlameMod::loadIndexedPackVersions(m, arr, APPLICATION->network(), &m_base_instance);
 }
 
+auto FlameModModel::loadDependencyVersions(const ModPlatform::Dependency& m, QJsonArray& arr) -> ModPlatform::IndexedVersion
+{
+    return FlameMod::loadDependencyVersions(m, arr, &m_base_instance);
+}
+
 auto FlameModModel::documentToArray(QJsonDocument& obj) const -> QJsonArray
 {
     return Json::ensureArray(obj.object(), "data");
@@ -81,7 +86,7 @@ void FlameTexturePackModel::loadIndexedPackVersions(ModPlatform::IndexedPack& m,
         auto const& mc_versions = version.mcVersion;
 
         if (std::any_of(mc_versions.constBegin(), mc_versions.constEnd(),
-                        [this](auto const& mc_version){ return Version(mc_version) <= maximumTexturePackVersion(); }))
+                        [this](auto const& mc_version) { return Version(mc_version) <= maximumTexturePackVersion(); }))
             filtered_versions.push_back(version);
     }
 
@@ -112,6 +117,29 @@ ResourceAPI::VersionSearchArgs FlameTexturePackModel::createVersionsArguments(QM
 }
 
 auto FlameTexturePackModel::documentToArray(QJsonDocument& obj) const -> QJsonArray
+{
+    return Json::ensureArray(obj.object(), "data");
+}
+
+FlameShaderPackModel::FlameShaderPackModel(const BaseInstance& base) : ShaderPackResourceModel(base, new FlameAPI) {}
+
+void FlameShaderPackModel::loadIndexedPack(ModPlatform::IndexedPack& m, QJsonObject& obj)
+{
+    FlameMod::loadIndexedPack(m, obj);
+}
+
+// We already deal with the URLs when initializing the pack, due to the API response's structure
+void FlameShaderPackModel::loadExtraPackInfo(ModPlatform::IndexedPack& m, QJsonObject& obj)
+{
+    FlameMod::loadBody(m, obj);
+}
+
+void FlameShaderPackModel::loadIndexedPackVersions(ModPlatform::IndexedPack& m, QJsonArray& arr)
+{
+    FlameMod::loadIndexedPackVersions(m, arr, APPLICATION->network(), &m_base_instance);
+}
+
+auto FlameShaderPackModel::documentToArray(QJsonDocument& obj) const -> QJsonArray
 {
     return Json::ensureArray(obj.object(), "data");
 }

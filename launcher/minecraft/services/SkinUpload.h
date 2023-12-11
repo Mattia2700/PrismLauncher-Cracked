@@ -5,31 +5,27 @@
 #include <memory>
 #include "tasks/Task.h"
 
-typedef shared_qobject_ptr<class SkinUpload> SkinUploadPtr;
+using SkinUploadPtr = shared_qobject_ptr<class SkinUpload>;
 
-class SkinUpload : public Task
-{
+class SkinUpload : public Task {
     Q_OBJECT
-public:
-    enum Model
-    {
-        STEVE,
-        ALEX
-    };
+   public:
+    enum Model { STEVE, ALEX };
 
     // Note this class takes ownership of the file.
-    SkinUpload(QObject *parent, QString token, QByteArray skin, Model model = STEVE);
+    SkinUpload(QObject* parent, QString token, QByteArray skin, Model model = STEVE);
     virtual ~SkinUpload() {}
 
-private:
+   private:
     Model m_model;
     QByteArray m_skin;
     QString m_token;
     shared_qobject_ptr<QNetworkReply> m_reply;
-protected:
+
+   protected:
     virtual void executeTask();
 
-public slots:
+   public slots:
 
     void downloadError(QNetworkReply::NetworkError);
     void sslErrors(const QList<QSslError>& errors);

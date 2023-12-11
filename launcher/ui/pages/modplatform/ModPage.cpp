@@ -89,17 +89,13 @@ void ModPage::filterMods()
 
 void ModPage::triggerSearch()
 {
-    auto changed = m_filter_widget->changed();
     m_filter = m_filter_widget->getFilter();
+    m_ui->packView->clearSelection();
+    m_ui->packDescription->clear();
+    m_ui->versionSelectionBox->clear();
+    updateSelectionButton();
 
-    if (changed) {
-        m_ui->packView->clearSelection();
-        m_ui->packDescription->clear();
-        m_ui->versionSelectionBox->clear();
-        updateSelectionButton();
-    }
-
-    static_cast<ModModel*>(m_model)->searchWithTerm(getSearchTerm(), m_ui->sortByBox->currentData().toUInt(), changed);
+    static_cast<ModModel*>(m_model)->searchWithTerm(getSearchTerm(), m_ui->sortByBox->currentData().toUInt(), m_filter_widget->changed());
     m_fetch_progress.watch(m_model->activeSearchJob().get());
 }
 
@@ -122,20 +118,23 @@ void ModPage::updateVersionList()
     QString mcVersion = packProfile->getComponentVersion("net.minecraft");
 
     auto current_pack = getCurrentPack();
+    if (!current_pack)
+        return;
     for (int i = 0; i < current_pack->versions.size(); i++) {
         auto version = current_pack->versions[i];
         bool valid = false;
         for (auto& mcVer : m_filter->versions) {
-            // NOTE: Flame doesn't care about loader, so passing it changes nothing.
-            if (validateVersion(version, mcVer.toString(), packProfile->getModLoaders())) {
+            if (validateVersion(version, mcVer.toString(), packProfile->getSupportedModLoaders())) {
                 valid = true;
                 break;
             }
         }
 
         // Only add the version if it's valid or using the 'Any' filter, but never if the version is opted out
-        if ((valid || m_filter->versions.empty()) && !optedOut(version))
-            m_ui->versionSelectionBox->addItem(version.version, QVariant(i));
+        if ((valid || m_filter->versions.empty()) && !optedOut(version)) {
+            auto release_type = version.version_type.isValid() ? QString(" [%1]").arg(version.version_type.toString()) : "";
+            m_ui->versionSelectionBox->addItem(QString("%1%2").arg(version.version, release_type), QVariant(i));
+        }
     }
     if (m_ui->versionSelectionBox->count() == 0) {
         m_ui->versionSelectionBox->addItem(tr("No valid version found!"), QVariant(-1));

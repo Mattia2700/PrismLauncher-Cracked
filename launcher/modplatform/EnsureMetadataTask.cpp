@@ -3,6 +3,7 @@
 #include <MurmurHash2.h>
 #include <QDebug>
 
+#include "Application.h"
 #include "Json.h"
 
 #include "minecraft/mod/Mod.h"
@@ -10,6 +11,7 @@
 
 #include "modplatform/flame/FlameAPI.h"
 #include "modplatform/flame/FlameModIndex.h"
+#include "modplatform/helpers/HashUtils.h"
 #include "modplatform/modrinth/ModrinthAPI.h"
 #include "modplatform/modrinth/ModrinthPackIndex.h"
 
@@ -24,21 +26,21 @@ EnsureMetadataTask::EnsureMetadataTask(Mod* mod, QDir dir, ModPlatform::Resource
     auto hash_task = createNewHash(mod);
     if (!hash_task)
         return;
-    connect(hash_task.get(), &Task::succeeded, [this, hash_task, mod] { m_mods.insert(hash_task->getResult(), mod); });
-    connect(hash_task.get(), &Task::failed, [this, hash_task, mod] { emitFail(mod, "", RemoveFromList::No); });
+    connect(hash_task.get(), &Hashing::Hasher::resultsReady, [this, mod](QString hash) { m_mods.insert(hash, mod); });
+    connect(hash_task.get(), &Task::failed, [this, mod] { emitFail(mod, "", RemoveFromList::No); });
     hash_task->start();
 }
 
 EnsureMetadataTask::EnsureMetadataTask(QList<Mod*>& mods, QDir dir, ModPlatform::ResourceProvider prov)
     : Task(nullptr), m_index_dir(dir), m_provider(prov), m_current_task(nullptr)
 {
-    m_hashing_task.reset(new ConcurrentTask(this, "MakeHashesTask", 10));
+    m_hashing_task.reset(new ConcurrentTask(this, "MakeHashesTask", APPLICATION->settings()->get("NumberOfConcurrentTasks").toInt()));
     for (auto* mod : mods) {
         auto hash_task = createNewHash(mod);
         if (!hash_task)
             continue;
-        connect(hash_task.get(), &Task::succeeded, [this, hash_task, mod] { m_mods.insert(hash_task->getResult(), mod); });
-        connect(hash_task.get(), &Task::failed, [this, hash_task, mod] { emitFail(mod, "", RemoveFromList::No); });
+        connect(hash_task.get(), &Hashing::Hasher::resultsReady, [this, mod](QString hash) { m_mods.insert(hash, mod); });
+        connect(hash_task.get(), &Task::failed, [this, mod] { emitFail(mod, "", RemoveFromList::No); });
         m_hashing_task->addTask(hash_task);
     }
 }
@@ -144,8 +146,10 @@ void EnsureMetadataTask::executeTask()
         connect(project_task.get(), &Task::finished, this, [=] {
             invalidade_leftover();
             project_task->deleteLater();
-            m_current_task = nullptr;
+            if (m_current_task)
+                m_current_task.reset();
         });
+        connect(project_task.get(), &Task::failed, this, &EnsureMetadataTask::emitFailed);
 
         m_current_task = project_task;
         project_task->start();
@@ -153,7 +157,8 @@ void EnsureMetadataTask::executeTask()
 
     connect(version_task.get(), &Task::finished, [=] {
         version_task->deleteLater();
-        m_current_task = nullptr;
+        if (m_current_task)
+            m_current_task.reset();
     });
 
     if (m_mods.size() > 1)
@@ -212,12 +217,12 @@ Task::Ptr EnsureMetadataTask::modrinthVersionsTask()
 {
     auto hash_type = ProviderCaps.hashType(ModPlatform::ResourceProvider::MODRINTH).first();
 
-    auto* response = new QByteArray();
+    auto response = std::make_shared<QByteArray>();
     auto ver_task = modrinth_api.currentVersions(m_mods.keys(), hash_type, response);
 
     // Prevents unfortunate timings when aborting the task
     if (!ver_task)
-        return Task::Ptr{nullptr};
+        return Task::Ptr{ nullptr };
 
     connect(ver_task.get(), &Task::succeeded, this, [this, response] {
         QJsonParseError parse_error{};
@@ -264,7 +269,7 @@ Task::Ptr EnsureMetadataTask::modrinthProjectsTask()
     for (auto const& data : m_temp_versions)
         addonIds.insert(data.addonId.toString(), data.hash);
 
-    auto response = new QByteArray();
+    auto response = std::make_shared<QByteArray>();
     Task::Ptr proj_task;
 
     if (addonIds.isEmpty()) {
@@ -277,7 +282,7 @@ Task::Ptr EnsureMetadataTask::modrinthProjectsTask()
 
     // Prevents unfortunate timings when aborting the task
     if (!proj_task)
-        return Task::Ptr{nullptr};
+        return Task::Ptr{ nullptr };
 
     connect(proj_task.get(), &Task::succeeded, this, [this, response, addonIds] {
         QJsonParseError parse_error{};
@@ -345,7 +350,7 @@ Task::Ptr EnsureMetadataTask::modrinthProjectsTask()
 // Flame
 Task::Ptr EnsureMetadataTask::flameVersionsTask()
 {
-    auto* response = new QByteArray();
+    auto response = std::make_shared<QByteArray>();
 
     QList<uint> fingerprints;
     for (auto& murmur : m_mods.keys()) {
@@ -413,7 +418,7 @@ Task::Ptr EnsureMetadataTask::flameProjectsTask()
     QHash<QString, QString> addonIds;
     for (auto const& hash : m_mods.keys()) {
         if (m_temp_versions.contains(hash)) {
-            auto const& data = m_temp_versions.find(hash).value();
+            auto data = m_temp_versions.find(hash).value();
 
             auto id_str = data.addonId.toString();
             if (!id_str.isEmpty())
@@ -421,7 +426,7 @@ Task::Ptr EnsureMetadataTask::flameProjectsTask()
         }
     }
 
-    auto response = new QByteArray();
+    auto response = std::make_shared<QByteArray>();
     Task::Ptr proj_task;
 
     if (addonIds.isEmpty()) {
@@ -434,7 +439,7 @@ Task::Ptr EnsureMetadataTask::flameProjectsTask()
 
     // Prevents unfortunate timings when aborting the task
     if (!proj_task)
-        return Task::Ptr{nullptr};
+        return Task::Ptr{ nullptr };
 
     connect(proj_task.get(), &Task::succeeded, this, [this, response, addonIds] {
         QJsonParseError parse_error{};

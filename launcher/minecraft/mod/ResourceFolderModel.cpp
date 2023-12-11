@@ -1,9 +1,12 @@
 #include "ResourceFolderModel.h"
+#include <QMessageBox>
 
 #include <QCoreApplication>
 #include <QDebug>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QIcon>
+#include <QMenu>
 #include <QMimeData>
 #include <QStyle>
 #include <QThreadPool>
@@ -12,9 +15,12 @@
 #include "Application.h"
 #include "FileSystem.h"
 
+#include "QVariantUtils.h"
 #include "minecraft/mod/tasks/BasicFolderLoadTask.h"
 
+#include "settings/Setting.h"
 #include "tasks/Task.h"
+#include "ui/dialogs/CustomMessageBox.h"
 
 ResourceFolderModel::ResourceFolderModel(QDir dir, BaseInstance* instance, QObject* parent, bool create_dir)
     : QAbstractListModel(parent), m_dir(dir), m_instance(instance), m_watcher(this)
@@ -28,6 +34,10 @@ ResourceFolderModel::ResourceFolderModel(QDir dir, BaseInstance* instance, QObje
 
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, &ResourceFolderModel::directoryChanged);
     connect(&m_helper_thread_task, &ConcurrentTask::finished, this, [this] { m_helper_thread_task.clear(); });
+#ifndef LAUNCHER_TEST
+    // in tests the application macro doesn't work
+    m_helper_thread_task.setMaxConcurrent(APPLICATION->settings()->get("NumberOfConcurrentTasks").toInt());
+#endif
 }
 
 ResourceFolderModel::~ResourceFolderModel()
@@ -36,7 +46,7 @@ ResourceFolderModel::~ResourceFolderModel()
         QCoreApplication::processEvents();
 }
 
-bool ResourceFolderModel::startWatching(const QStringList paths)
+bool ResourceFolderModel::startWatching(const QStringList& paths)
 {
     if (m_is_watching)
         return false;
@@ -55,7 +65,7 @@ bool ResourceFolderModel::startWatching(const QStringList paths)
     return m_is_watching;
 }
 
-bool ResourceFolderModel::stopWatching(const QStringList paths)
+bool ResourceFolderModel::stopWatching(const QStringList& paths)
 {
     if (!m_is_watching)
         return false;
@@ -74,10 +84,6 @@ bool ResourceFolderModel::stopWatching(const QStringList paths)
 
 bool ResourceFolderModel::installResource(QString original_path)
 {
-    if (!m_can_interact) {
-        return false;
-    }
-
     // NOTE: fix for GH-1178: remove trailing slash to avoid issues with using the empty result of QFileInfo::fileName
     original_path = FS::NormalizePath(original_path);
     QFileInfo file_info(original_path);
@@ -156,7 +162,7 @@ bool ResourceFolderModel::uninstallResource(QString file_name)
 {
     for (auto& resource : m_resources) {
         if (resource->fileinfo().fileName() == file_name) {
-            auto res = resource->destroy();
+            auto res = resource->destroy(false);
 
             update();
 
@@ -168,9 +174,6 @@ bool ResourceFolderModel::uninstallResource(QString file_name)
 
 bool ResourceFolderModel::deleteResources(const QModelIndexList& indexes)
 {
-    if (!m_can_interact)
-        return false;
-
     if (indexes.isEmpty())
         return true;
 
@@ -189,11 +192,8 @@ bool ResourceFolderModel::deleteResources(const QModelIndexList& indexes)
     return true;
 }
 
-bool ResourceFolderModel::setResourceEnabled(const QModelIndexList &indexes, EnableAction action)
+bool ResourceFolderModel::setResourceEnabled(const QModelIndexList& indexes, EnableAction action)
 {
-    if (!m_can_interact)
-        return false;
-
     if (indexes.isEmpty())
         return true;
 
@@ -246,15 +246,18 @@ bool ResourceFolderModel::update()
     connect(m_current_update_task.get(), &Task::succeeded, this, &ResourceFolderModel::onUpdateSucceeded,
             Qt::ConnectionType::QueuedConnection);
     connect(m_current_update_task.get(), &Task::failed, this, &ResourceFolderModel::onUpdateFailed, Qt::ConnectionType::QueuedConnection);
-    connect(m_current_update_task.get(), &Task::finished, this, [=] {
-        m_current_update_task.reset();
-        if (m_scheduled_update) {
-            m_scheduled_update = false;
-            update();
-        } else {
-            emit updateFinished();
-        }
-    }, Qt::ConnectionType::QueuedConnection);
+    connect(
+        m_current_update_task.get(), &Task::finished, this,
+        [=] {
+            m_current_update_task.reset();
+            if (m_scheduled_update) {
+                m_scheduled_update = false;
+                update();
+            } else {
+                emit updateFinished();
+            }
+        },
+        Qt::ConnectionType::QueuedConnection);
 
     QThreadPool::globalInstance()->start(m_current_update_task.get());
 
@@ -344,15 +347,9 @@ Qt::DropActions ResourceFolderModel::supportedDropActions() const
 Qt::ItemFlags ResourceFolderModel::flags(const QModelIndex& index) const
 {
     Qt::ItemFlags defaultFlags = QAbstractListModel::flags(index);
-    auto flags = defaultFlags;
-    if (!m_can_interact) {
-        flags &= ~Qt::ItemIsDropEnabled;
-    } else {
-        flags |= Qt::ItemIsDropEnabled;
-        if (index.isValid()) {
-            flags |= Qt::ItemIsUserCheckable;
-        }
-    }
+    auto flags = defaultFlags | Qt::ItemIsDropEnabled;
+    if (index.isValid())
+        flags |= Qt::ItemIsUserCheckable;
     return flags;
 }
 
@@ -425,16 +422,17 @@ QVariant ResourceFolderModel::data(const QModelIndex& index, int role) const
             if (column == NAME_COLUMN) {
                 if (at(row).isSymLinkUnder(instDirPath())) {
                     return m_resources[row]->internal_id() +
-                        tr("\nWarning: This resource is symbolically linked from elsewhere. Editing it will also change the original."
-                           "\nCanonical Path: %1")
-                            .arg(at(row).fileinfo().canonicalFilePath());;
+                           tr("\nWarning: This resource is symbolically linked from elsewhere. Editing it will also change the original."
+                              "\nCanonical Path: %1")
+                               .arg(at(row).fileinfo().canonicalFilePath());
+                    ;
                 }
                 if (at(row).isMoreThanOneHardLink()) {
                     return m_resources[row]->internal_id() +
-                        tr("\nWarning: This resource is hard linked elsewhere. Editing it will also change the original.");
+                           tr("\nWarning: This resource is hard linked elsewhere. Editing it will also change the original.");
                 }
             }
-            
+
             return m_resources[row]->internal_id();
         case Qt::DecorationRole: {
             if (column == NAME_COLUMN && (at(row).isSymLinkUnder(instDirPath()) || at(row).isMoreThanOneHardLink()))
@@ -454,27 +452,39 @@ QVariant ResourceFolderModel::data(const QModelIndex& index, int role) const
     }
 }
 
-bool ResourceFolderModel::setData(const QModelIndex& index, const QVariant& value, int role)
+bool ResourceFolderModel::setData(const QModelIndex& index, [[maybe_unused]] const QVariant& value, int role)
 {
     int row = index.row();
     if (row < 0 || row >= rowCount(index.parent()) || !index.isValid())
         return false;
 
-    if (role == Qt::CheckStateRole)
+    if (role == Qt::CheckStateRole) {
+        if (m_instance != nullptr && m_instance->isRunning()) {
+            auto response =
+                CustomMessageBox::selectable(nullptr, tr("Confirm toggle"),
+                                             tr("If you enable/disable this resource while the game is running it may crash your game.\n"
+                                                "Are you sure you want to do this?"),
+                                             QMessageBox::Warning, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                    ->exec();
+
+            if (response != QMessageBox::Yes)
+                return false;
+        }
         return setResourceEnabled({ index }, EnableAction::TOGGLE);
+    }
 
     return false;
 }
 
-QVariant ResourceFolderModel::headerData(int section, Qt::Orientation orientation, int role) const
+QVariant ResourceFolderModel::headerData(int section, [[maybe_unused]] Qt::Orientation orientation, int role) const
 {
     switch (role) {
         case Qt::DisplayRole:
             switch (section) {
+                case ACTIVE_COLUMN:
                 case NAME_COLUMN:
-                    return tr("Name");
                 case DATE_COLUMN:
-                    return tr("Last modified");
+                    return columnNames().at(section);
                 default:
                     return {};
             }
@@ -500,6 +510,62 @@ QVariant ResourceFolderModel::headerData(int section, Qt::Orientation orientatio
     return {};
 }
 
+void ResourceFolderModel::setupHeaderAction(QAction* act, int column)
+{
+    Q_ASSERT(act);
+
+    act->setText(columnNames().at(column));
+}
+
+void ResourceFolderModel::saveColumns(QTreeView* tree)
+{
+    auto const setting_name = QString("UI/%1_Page/Columns").arg(id());
+    auto setting = (m_instance->settings()->contains(setting_name)) ? m_instance->settings()->getSetting(setting_name)
+                                                                    : m_instance->settings()->registerSetting(setting_name);
+
+    setting->set(tree->header()->saveState());
+}
+
+void ResourceFolderModel::loadColumns(QTreeView* tree)
+{
+    auto const setting_name = QString("UI/%1_Page/Columns").arg(id());
+    auto setting = (m_instance->settings()->contains(setting_name)) ? m_instance->settings()->getSetting(setting_name)
+                                                                    : m_instance->settings()->registerSetting(setting_name);
+
+    tree->header()->restoreState(setting->get().toByteArray());
+}
+
+QMenu* ResourceFolderModel::createHeaderContextMenu(QTreeView* tree)
+{
+    auto menu = new QMenu(tree);
+
+    menu->addSeparator()->setText(tr("Show / Hide Columns"));
+
+    for (int col = 0; col < columnCount(); ++col) {
+        // Skip creating actions for columns that should not be hidden
+        if (!m_columnsHideable.at(col))
+            continue;
+        auto act = new QAction(menu);
+        setupHeaderAction(act, col);
+
+        act->setCheckable(true);
+        act->setChecked(!tree->isColumnHidden(col));
+
+        connect(act, &QAction::toggled, tree, [this, col, tree](bool toggled) {
+            tree->setColumnHidden(col, !toggled);
+            for (int c = 0; c < columnCount(); ++c) {
+                if (m_column_resize_modes.at(c) == QHeaderView::ResizeToContents)
+                    tree->resizeColumnToContents(c);
+            }
+            saveColumns(tree);
+        });
+
+        menu->addAction(act);
+    }
+
+    return menu;
+}
+
 QSortFilterProxyModel* ResourceFolderModel::createFilterProxyModel(QObject* parent)
 {
     return new ProxyModel(parent);
@@ -511,18 +577,9 @@ SortType ResourceFolderModel::columnToSortKey(size_t column) const
     return m_column_sort_keys.at(column);
 }
 
-void ResourceFolderModel::enableInteraction(bool enabled)
-{
-    if (m_can_interact == enabled)
-        return;
-
-    m_can_interact = enabled;
-    if (size())
-        emit dataChanged(index(0), index(size() - 1));
-}
-
 /* Standard Proxy Model for createFilterProxyModel */
-[[nodiscard]] bool ResourceFolderModel::ProxyModel::filterAcceptsRow(int source_row, const QModelIndex& source_parent) const
+[[nodiscard]] bool ResourceFolderModel::ProxyModel::filterAcceptsRow(int source_row,
+                                                                     [[maybe_unused]] const QModelIndex& source_parent) const
 {
     auto* model = qobject_cast<ResourceFolderModel*>(sourceModel());
     if (!model)
@@ -556,6 +613,7 @@ void ResourceFolderModel::enableInteraction(bool enabled)
     return (compare_result.first > 0);
 }
 
-QString ResourceFolderModel::instDirPath() const {
+QString ResourceFolderModel::instDirPath() const
+{
     return QFileInfo(m_instance->instanceRoot()).absoluteFilePath();
 }

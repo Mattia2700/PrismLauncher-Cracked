@@ -4,7 +4,7 @@
 /*
  *  Prism Launcher - Minecraft Launcher
  *  Copyright (C) 2022 Sefa Eyeoglu <contact@scrumplex.net>
- *  Copyright (C) 2022 TheKodeToad <TheKodeToad@proton.me>
+ *  Copyright (C) 2023 TheKodeToad <TheKodeToad@proton.me>
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -44,9 +44,6 @@
 #include <QKeyEvent>
 
 #include "Markdown.h"
-#include "ResourceDownloadTask.h"
-
-#include "minecraft/MinecraftInstance.h"
 
 #include "ui/dialogs/ResourceDownloadDialog.h"
 #include "ui/pages/modplatform/ResourceModel.h"
@@ -104,6 +101,7 @@ void ResourcePage::openedImpl()
 
     updateSelectionButton();
     triggerSearch();
+    m_ui->searchEdit->setFocus();
 }
 
 auto ResourcePage::eventFilter(QObject* watched, QEvent* event) -> bool
@@ -174,7 +172,11 @@ ModPlatform::IndexedPack::Ptr ResourcePage::getCurrentPack() const
 void ResourcePage::updateUi()
 {
     auto current_pack = getCurrentPack();
-
+    if (!current_pack) {
+        m_ui->packDescription->setHtml({});
+        m_ui->packDescription->flush();
+        return;
+    }
     QString text = "";
     QString name = current_pack->name;
 
@@ -240,8 +242,8 @@ void ResourcePage::updateSelectionButton()
     }
 
     m_ui->resourceSelectionButton->setEnabled(true);
-    if (getCurrentPack()) {
-        if (!getCurrentPack()->isVersionSelected(m_selected_version_index))
+    if (auto current_pack = getCurrentPack(); current_pack) {
+        if (!current_pack->isVersionSelected(m_selected_version_index))
             m_ui->resourceSelectionButton->setText(tr("Select %1 for download").arg(resourceString()));
         else
             m_ui->resourceSelectionButton->setText(tr("Deselect %1 for download").arg(resourceString()));
@@ -258,13 +260,17 @@ void ResourcePage::updateVersionList()
     m_ui->versionSelectionBox->clear();
     m_ui->versionSelectionBox->blockSignals(false);
 
-    for (int i = 0; i < current_pack->versions.size(); i++) {
-        auto& version = current_pack->versions[i];
-        if (optedOut(version))
-            continue;
+    if (current_pack)
+        for (int i = 0; i < current_pack->versions.size(); i++) {
+            auto& version = current_pack->versions[i];
+            if (optedOut(version))
+                continue;
 
-        m_ui->versionSelectionBox->addItem(current_pack->versions[i].version, QVariant(i));
-    }
+            auto release_type = current_pack->versions[i].version_type.isValid()
+                                    ? QString(" [%1]").arg(current_pack->versions[i].version_type.toString())
+                                    : "";
+            m_ui->versionSelectionBox->addItem(current_pack->versions[i].version, QVariant(i));
+        }
 
     if (m_ui->versionSelectionBox->count() == 0) {
         m_ui->versionSelectionBox->addItem(tr("No valid version found."), QVariant(-1));
@@ -274,7 +280,7 @@ void ResourcePage::updateVersionList()
     updateSelectionButton();
 }
 
-void ResourcePage::onSelectionChanged(QModelIndex curr, QModelIndex prev)
+void ResourcePage::onSelectionChanged(QModelIndex curr, [[maybe_unused]] QModelIndex prev)
 {
     if (!curr.isValid()) {
         return;
@@ -283,7 +289,7 @@ void ResourcePage::onSelectionChanged(QModelIndex curr, QModelIndex prev)
     auto current_pack = getCurrentPack();
 
     bool request_load = false;
-    if (!current_pack->versionsLoaded) {
+    if (!current_pack || !current_pack->versionsLoaded) {
         m_ui->resourceSelectionButton->setText(tr("Loading versions..."));
         m_ui->resourceSelectionButton->setEnabled(false);
 
@@ -292,7 +298,7 @@ void ResourcePage::onSelectionChanged(QModelIndex curr, QModelIndex prev)
         updateVersionList();
     }
 
-    if (!current_pack->extraDataLoaded)
+    if (current_pack && !current_pack->extraDataLoaded)
         request_load = true;
 
     if (request_load)
@@ -301,9 +307,9 @@ void ResourcePage::onSelectionChanged(QModelIndex curr, QModelIndex prev)
     updateUi();
 }
 
-void ResourcePage::onVersionSelectionChanged(QString data)
+void ResourcePage::onVersionSelectionChanged(QString versionData)
 {
-    if (data.isNull() || data.isEmpty()) {
+    if (versionData.isNull() || versionData.isEmpty()) {
         m_selected_version_index = -1;
         return;
     }
@@ -340,7 +346,7 @@ void ResourcePage::onResourceSelected()
         return;
 
     auto current_pack = getCurrentPack();
-    if (!current_pack->versionsLoaded)
+    if (!current_pack || !current_pack->versionsLoaded)
         return;
 
     auto& version = current_pack->versions[m_selected_version_index];
@@ -386,10 +392,10 @@ void ResourcePage::openUrl(const QUrl& url)
         const QString slug = match.captured(1);
 
         // ensure the user isn't opening the same mod
-        if (slug != getCurrentPack()->slug) {
+        if (auto current_pack = getCurrentPack(); current_pack && slug != current_pack->slug) {
             m_parent_dialog->selectPage(page);
 
-            auto newPage = m_parent_dialog->getSelectedPage();
+            auto newPage = m_parent_dialog->selectedPage();
 
             QLineEdit* searchEdit = newPage->m_ui->searchEdit;
             auto model = newPage->m_model;
